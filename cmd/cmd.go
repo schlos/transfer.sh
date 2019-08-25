@@ -2,19 +2,17 @@ package cmd
 
 import (
 	"fmt"
-
+	"log"
 	"os"
-
 	"strings"
 
 	"github.com/dutchcoders/transfer.sh/server"
 	"github.com/fatih/color"
-	"github.com/minio/cli"
-	"log"
+	"github.com/urfave/cli"
 	"google.golang.org/api/googleapi"
 )
 
-var Version = "0.1"
+var Version = "1.1.2"
 var helpTemplate = `NAME:
 {{.Name}} - {{.Usage}}
 
@@ -79,6 +77,11 @@ var globalFlags = []cli.Flag{
 		Value: "",
 	},
 	cli.StringFlag{
+		Name:  "proxy-path",
+		Usage: "path prefix when service is run behind a proxy",
+		Value: "",
+	},
+	cli.StringFlag{
 		Name:  "ga-key",
 		Usage: "key for google analytics (front end)",
 		Value: "",
@@ -96,8 +99,14 @@ var globalFlags = []cli.Flag{
 	cli.StringFlag{
 		Name:   "s3-endpoint",
 		Usage:  "",
-		Value:  "http://s3-eu-west-1.amazonaws.com",
+		Value:  "",
 		EnvVar: "S3_ENDPOINT",
+	},
+	cli.StringFlag{
+		Name:   "s3-region",
+		Usage:  "",
+		Value:  "eu-west-1",
+		EnvVar: "S3_REGION",
 	},
 	cli.StringFlag{
 		Name:   "aws-access-key",
@@ -116,6 +125,14 @@ var globalFlags = []cli.Flag{
 		Usage:  "",
 		Value:  "",
 		EnvVar: "BUCKET",
+	},
+	cli.BoolFlag{
+		Name:  "s3-no-multipart",
+		Usage: "Disables S3 Multipart Puts",
+	},
+	cli.BoolFlag{
+		Name:  "s3-path-style",
+		Usage: "Forces path style URLs, required for Minio.",
 	},
 	cli.StringFlag{
 		Name:  "gdrive-client-json-filepath",
@@ -180,6 +197,16 @@ var globalFlags = []cli.Flag{
 		Usage: "pass for http basic auth",
 		Value: "",
 	},
+	cli.StringFlag{
+		Name:  "ip-whitelist",
+		Usage: "comma separated list of ips allowed to connect to the service",
+		Value: "",
+	},
+	cli.StringFlag{
+		Name:  "ip-blacklist",
+		Usage: "comma separated list of ips not allowed to connect to the service",
+		Value: "",
+	},
 }
 
 type Cmd struct {
@@ -198,6 +225,7 @@ func New() *Cmd {
 	app.Author = ""
 	app.Usage = "transfer.sh"
 	app.Description = `Easy file sharing from the command line`
+	app.Version = Version
 	app.Flags = globalFlags
 	app.CustomAppHelpTemplate = helpTemplate
 	app.Commands = []cli.Command{
@@ -230,6 +258,10 @@ func New() *Cmd {
 
 		if v := c.String("web-path"); v != "" {
 			options = append(options, server.WebPath(v))
+		}
+
+		if v := c.String("proxy-path"); v != "" {
+			options = append(options, server.ProxyPath(v))
 		}
 
 		if v := c.String("ga-key"); v != "" {
@@ -286,6 +318,23 @@ func New() *Cmd {
 			options = append(options, server.HttpAuthCredentials(httpAuthUser, httpAuthPass))
 		}
 
+		applyIPFilter := false
+		ipFilterOptions := server.IPFilterOptions{}
+		if ipWhitelist := c.String("ip-whitelist"); ipWhitelist != "" {
+			applyIPFilter = true
+			ipFilterOptions.AllowedIPs = strings.Split(ipWhitelist, ",")
+			ipFilterOptions.BlockByDefault = true
+		}
+
+		if ipBlacklist := c.String("ip-blacklist"); ipBlacklist != "" {
+			applyIPFilter = true
+			ipFilterOptions.BlockedIPs = strings.Split(ipBlacklist, ",")
+		}
+
+		if applyIPFilter {
+			options = append(options, server.FilterOptions(ipFilterOptions))
+		}
+
 		switch provider := c.String("provider"); provider {
 		case "s3":
 			if accessKey := c.String("aws-access-key"); accessKey == "" {
@@ -294,7 +343,7 @@ func New() *Cmd {
 				panic("secret-key not set.")
 			} else if bucket := c.String("bucket"); bucket == "" {
 				panic("bucket not set.")
-			} else if storage, err := server.NewS3Storage(accessKey, secretKey, bucket, c.String("s3-endpoint"), logger); err != nil {
+			} else if storage, err := server.NewS3Storage(accessKey, secretKey, bucket, c.String("s3-region"), c.String("s3-endpoint"), logger, c.Bool("s3-no-multipart"), c.Bool("s3-path-style")); err != nil {
 				panic(err)
 			} else {
 				options = append(options, server.UseStorage(storage))
